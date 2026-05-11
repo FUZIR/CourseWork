@@ -5,6 +5,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, filedialog
 import time
+import threading
 
 import matplotlib
 matplotlib.use('TkAgg')
@@ -76,6 +77,7 @@ class SensorPlacementApp:
             ("Макс. датч. B (h):",   "h_max",      "1"),
             ("Ліміт покриття (λ):",  "lambda_lim", "1"),
             ("Щільність S (d):",     "density",    "0.75"),
+            ("Макс. вага U (u_max):","u_max",      "50"),
         ]
         self.params = {}
         for row, (label, key, default) in enumerate(fields):
@@ -118,7 +120,6 @@ class SensorPlacementApp:
         nb.add(tab, text="Табу-пошук")
 
         tabu_fields = [
-            ("Макс. ітерацій:",     "max_iter",  "150"),
             ("Розмір списку табу:", "tabu_size", "10"),
         ]
         self.tabu_params = {}
@@ -172,12 +173,12 @@ class SensorPlacementApp:
             ("К-сть ІЗ:", 'lam_tasks', '5'),
         ], self.experiment_lambda)
 
-        # ---- Group: Умова завершення MaxIter ----
-        self._exp_group(inner, "Умова завершення (MaxIter)", [
-            ("MaxIter від:", 'iter_from',  '20'),
-            ("MaxIter до:",  'iter_to',    '200'),
-            ("Крок:",        'iter_step',  '20'),
-            ("К-сть ІЗ:",    'iter_tasks', '5'),
+        # ---- Group: Коефіцієнт K (MaxIter = K·m·n) ----
+        self._exp_group(inner, "Коефіцієнт K  (MaxIter = K·m·n)", [
+            ("K від:",    'iter_from',  '1'),
+            ("K до:",     'iter_to',    '10'),
+            ("Крок:",     'iter_step',  '1'),
+            ("К-сть ІЗ:", 'iter_tasks', '5'),
         ], self.experiment_max_iter)
 
         # ---- Group: Розмір списку табу ----
@@ -234,9 +235,18 @@ class SensorPlacementApp:
     # ----------------------------------------------------------------
 
     def log_msg(self, msg):
+        if threading.current_thread() is not threading.main_thread():
+            self.root.after(0, self.log_msg, msg)
+            return
         self.log.insert(tk.END, msg + "\n")
         self.log.see(tk.END)
-        self.root.update_idletasks()
+
+    def _run_async(self, worker, on_done):
+        """Запускає worker() у фоновому потоці; після завершення викликає on_done(result) у головному потоці."""
+        def _thread():
+            result = worker()
+            self.root.after(0, on_done, result)
+        threading.Thread(target=_thread, daemon=True).start()
 
     def get_params(self):
         try:
@@ -264,10 +274,18 @@ class SensorPlacementApp:
         except ValueError:
             return 0.75
 
+    def _get_u_max(self):
+        try:
+            return int(self.params['u_max'].get())
+        except ValueError:
+            return 50
+
+
     def _ensure_matrices(self, m, n, alpha, beta):
         if self.U is None or self.U.shape != (m, n):
             d = self._get_density()
-            self.U, self.S, _, _, _ = generate_problem(m, n, alpha, beta, d=d)
+            u_max = self._get_u_max()
+            self.U, self.S, _, _, _ = generate_problem(m, n, alpha, beta, d=d, u_max=u_max)
             self._redraw_matrices()
 
     def _irange(self, key_from, key_to, key_step):
@@ -291,10 +309,11 @@ class SensorPlacementApp:
             return
         m, n, alpha, beta, *_ = p
         d = self._get_density()
-        self.U, self.S, _, _, _ = generate_problem(m, n, alpha, beta, d=d)
+        u_max = self._get_u_max()
+        self.U, self.S, _, _, _ = generate_problem(m, n, alpha, beta, d=d, u_max=u_max)
         self._redraw_matrices()
         self._redraw_map([], [], None, "Нова задача (без датчиків)")
-        self.log_msg(f"\nЗгенеровано задачу {m}×{n}, d={d}")
+        self.log_msg(f"\nЗгенеровано задачу {m}×{n}, d={d}, u_max={u_max}")
 
     def edit_matrix_u(self):
         if self.U is None:
@@ -397,7 +416,7 @@ class SensorPlacementApp:
             self._redraw_convergence(f_vals, f_vals, "Жадібний алгоритм")
 
         elif algo == 'tabu':
-            max_iter  = int(self.tabu_params['max_iter'].get())
+            max_iter  = m * n
             tabu_size = int(self.tabu_params['tabu_size'].get())
             t0 = time.time()
             A, B, F, K, history = tabu_search(
@@ -418,34 +437,37 @@ class SensorPlacementApp:
             return
         m, n, alpha, beta, L, h, lambda_lim = p
         self._ensure_matrices(m, n, alpha, beta)
-        max_iter  = int(self.tabu_params['max_iter'].get())
+        max_iter  = m * n
         tabu_size = int(self.tabu_params['tabu_size'].get())
+        U, S = self.U, self.S
 
-        t0 = time.time()
-        _, _, F_g, _, _ = greedy_algorithm(
-            self.U, self.S, m, n, alpha, beta, L, h, lambda_lim)
-        t_g = time.time() - t0
+        def worker():
+            t0 = time.time()
+            _, _, F_g, _, _ = greedy_algorithm(U, S, m, n, alpha, beta, L, h, lambda_lim)
+            t_g = time.time() - t0
+            t0 = time.time()
+            _, _, F_t, _, _ = tabu_search(U, S, m, n, alpha, beta, L, h, lambda_lim,
+                                          max_iter=max_iter, tabu_size=tabu_size)
+            t_tabu = time.time() - t0
+            return F_g, F_t, t_g, t_tabu
 
-        t0 = time.time()
-        _, _, F_t, _, _ = tabu_search(
-            self.U, self.S, m, n, alpha, beta, L, h, lambda_lim,
-            max_iter=max_iter, tabu_size=tabu_size)
-        t_tabu = time.time() - t0
+        def on_done(result):
+            F_g, F_t, t_g, t_tabu = result
+            improve = (F_t - F_g) / F_g * 100 if F_g > 0 else 0.0
+            self.log_msg("\n" + "=" * 40)
+            self.log_msg("ПОРІВНЯННЯ АЛГОРИТМІВ")
+            self.log_msg(f"  Жадібний:   F={F_g}, час={t_g:.4f}с")
+            self.log_msg(f"  Табу-пошук: F={F_t}, час={t_tabu:.4f}с")
+            self.log_msg(f"  Покращення: {improve:+.1f}%")
+            draw_comparison_bars(self.fig_exp, [F_g, F_t], [t_g, t_tabu])
+            self.fig_exp.suptitle(
+                f"Порівняння | покращення табу: {improve:+.1f}%",
+                fontsize=11, fontweight='bold')
+            self.fig_exp.tight_layout()
+            self.canvas_exp.draw()
+            self.viz_nb.select(2)
 
-        improve = (F_t - F_g) / F_g * 100 if F_g > 0 else 0.0
-        self.log_msg("\n" + "=" * 40)
-        self.log_msg("ПОРІВНЯННЯ АЛГОРИТМІВ")
-        self.log_msg(f"  Жадібний:   F={F_g}, час={t_g:.4f}с")
-        self.log_msg(f"  Табу-пошук: F={F_t}, час={t_tabu:.4f}с")
-        self.log_msg(f"  Покращення: {improve:+.1f}%")
-
-        draw_comparison_bars(self.fig_exp, [F_g, F_t], [t_g, t_tabu])
-        self.fig_exp.suptitle(
-            f"Порівняння | покращення табу: {improve:+.1f}%",
-            fontsize=11, fontweight='bold')
-        self.fig_exp.tight_layout()
-        self.canvas_exp.draw()
-        self.viz_nb.select(2)
+        self._run_async(worker, on_done)
 
     # ----------------------------------------------------------------
     # Спільний контекст для експериментів
@@ -457,7 +479,7 @@ class SensorPlacementApp:
         if p is None:
             return None
         m, n, alpha, beta, L, h, lambda_lim = p
-        max_iter  = int(self.tabu_params['max_iter'].get())
+        max_iter  = m * n
         tabu_size = int(self.tabu_params['tabu_size'].get())
         d = self._get_density()
         return m, n, alpha, beta, L, h, lambda_lim, max_iter, tabu_size, d
@@ -476,37 +498,42 @@ class SensorPlacementApp:
         dim_step  = max(1, int(self.exp_ranges['size_step'].get()))
         tasks     = self._itasks('size_tasks')
 
-        labels, gf, tf, gt, tt = exp_module.run_size_experiment(
-            alpha, beta, h, lambda_lim, tasks, d,
-            max_iter, tabu_size, dim_from, dim_to, dim_step, self.log_msg)
-        if not labels:
-            return
+        def worker():
+            return exp_module.run_size_experiment(
+                alpha, beta, h, lambda_lim, tasks, d,
+                max_iter, tabu_size, dim_from, dim_to, dim_step, self.log_msg)
 
-        x = np.arange(len(labels))
-        self.fig_exp.clear()
-        ax1 = self.fig_exp.add_subplot(121)
-        ax2 = self.fig_exp.add_subplot(122)
-        w = 0.35
-        ax1.bar(x - w/2, gf, w, label='Жадібний',   color='#2196F3')
-        ax1.bar(x + w/2, tf, w, label='Табу-пошук', color='#FF5722')
-        ax1.set_xticks(x)
-        ax1.set_xticklabels(labels, rotation=30)
-        ax1.set_title("Цільова функція F")
-        ax1.set_ylabel("F (середнє)")
-        ax1.legend()
-        ax1.grid(axis='y', alpha=0.3)
-        ax2.plot(x, gt, 'b-o', label='Жадібний')
-        ax2.plot(x, tt, 'r-s', label='Табу-пошук')
-        ax2.set_xticks(x)
-        ax2.set_xticklabels(labels, rotation=30)
-        ax2.set_title("Час виконання")
-        ax2.set_ylabel("час, с")
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        self.fig_exp.suptitle("Вплив розмірності задачі", fontsize=12, fontweight='bold')
-        self.fig_exp.tight_layout()
-        self.canvas_exp.draw()
-        self.viz_nb.select(2)
+        def on_done(result):
+            labels, gf, tf, gt, tt = result
+            if not labels:
+                return
+            x = np.arange(len(labels))
+            self.fig_exp.clear()
+            ax1 = self.fig_exp.add_subplot(121)
+            ax2 = self.fig_exp.add_subplot(122)
+            w = 0.35
+            ax1.bar(x - w/2, gf, w, label='Жадібний',   color='#2196F3')
+            ax1.bar(x + w/2, tf, w, label='Табу-пошук', color='#FF5722')
+            ax1.set_xticks(x)
+            ax1.set_xticklabels(labels, rotation=30)
+            ax1.set_title("Цільова функція F")
+            ax1.set_ylabel("F (середнє)")
+            ax1.legend()
+            ax1.grid(axis='y', alpha=0.3)
+            ax2.plot(x, gt, 'b-o', label='Жадібний')
+            ax2.plot(x, tt, 'r-s', label='Табу-пошук')
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(labels, rotation=30)
+            ax2.set_title("Час виконання")
+            ax2.set_ylabel("час, с")
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            self.fig_exp.suptitle("Вплив розмірності задачі", fontsize=12, fontweight='bold')
+            self.fig_exp.tight_layout()
+            self.canvas_exp.draw()
+            self.viz_nb.select(2)
+
+        self._run_async(worker, on_done)
 
     def experiment_lambda(self):
         ctx = self._exp_context()
@@ -518,60 +545,76 @@ class SensorPlacementApp:
         lam_step = max(1, int(self.exp_ranges['lam_step'].get()))
         runs     = self._itasks('lam_tasks')
 
-        lambdas, gf, tf = exp_module.run_lambda_experiment(
-            m, n, alpha, beta, L, h, runs, d,
-            max_iter, tabu_size, lam_from, lam_to, lam_step, self.log_msg)
-        if not lambdas:
-            return
+        def worker():
+            return exp_module.run_lambda_experiment(
+                m, n, alpha, beta, L, h, runs, d,
+                max_iter, tabu_size, lam_from, lam_to, lam_step, self.log_msg)
 
-        self.fig_exp.clear()
-        ax = self.fig_exp.add_subplot(111)
-        ax.plot(lambdas, gf, 'b-o', label='Жадібний',   linewidth=2, markersize=8)
-        ax.plot(lambdas, tf, 'r-s', label='Табу-пошук', linewidth=2, markersize=8)
-        ax.set_xlabel("Ліміт перекриття λ")
-        ax.set_ylabel("F (середнє)")
-        ax.set_title("Вплив параметра λ", fontsize=12, fontweight='bold')
-        ax.set_xticks(lambdas)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        self.fig_exp.tight_layout()
-        self.canvas_exp.draw()
-        self.viz_nb.select(2)
+        def on_done(result):
+            lambdas, gf, tf = result
+            if not lambdas:
+                return
+            self.fig_exp.clear()
+            ax = self.fig_exp.add_subplot(111)
+            ax.plot(lambdas, gf, 'b-o', label='Жадібний',   linewidth=2, markersize=8)
+            ax.plot(lambdas, tf, 'r-s', label='Табу-пошук', linewidth=2, markersize=8)
+            ax.set_xlabel("Ліміт перекриття λ")
+            ax.set_ylabel("F (середнє)")
+            ax.set_title("Вплив параметра λ", fontsize=12, fontweight='bold')
+            ax.set_xticks(lambdas)
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            self.fig_exp.tight_layout()
+            self.canvas_exp.draw()
+            self.viz_nb.select(2)
+
+        self._run_async(worker, on_done)
 
     def experiment_max_iter(self):
         ctx = self._exp_context()
         if ctx is None:
             return
         m, n, alpha, beta, L, h, lambda_lim, _, tabu_size, d = ctx
-        iter_from = int(self.exp_ranges['iter_from'].get())
-        iter_to   = int(self.exp_ranges['iter_to'].get())
-        iter_step = max(1, int(self.exp_ranges['iter_step'].get()))
-        runs      = self._itasks('iter_tasks')
+        k_from = int(self.exp_ranges['iter_from'].get())
+        k_to   = int(self.exp_ranges['iter_to'].get())
+        k_step = max(1, int(self.exp_ranges['iter_step'].get()))
+        runs   = self._itasks('iter_tasks')
 
-        iters, fs, ts = exp_module.run_max_iter_experiment(
-            m, n, alpha, beta, L, h, lambda_lim,
-            tabu_size, runs, d, iter_from, iter_to, iter_step, self.log_msg)
-        if not iters:
-            return
+        def worker():
+            return exp_module.run_max_iter_experiment(
+                m, n, alpha, beta, L, h, lambda_lim,
+                tabu_size, runs, d, k_from, k_to, k_step, self.log_msg)
 
-        self.fig_exp.clear()
-        ax1 = self.fig_exp.add_subplot(121)
-        ax2 = self.fig_exp.add_subplot(122)
-        ax1.plot(iters, fs, 'r-s', linewidth=2, markersize=8)
-        ax1.set_xlabel("MaxIter")
-        ax1.set_ylabel("F (середнє)")
-        ax1.set_title("Якість від MaxIter")
-        ax1.grid(True, alpha=0.3)
-        ax2.plot(iters, ts, 'g-^', linewidth=2, markersize=8)
-        ax2.set_xlabel("MaxIter")
-        ax2.set_ylabel("час, с")
-        ax2.set_title("Час від MaxIter")
-        ax2.grid(True, alpha=0.3)
-        self.fig_exp.suptitle(
-            "Вплив умови завершення (MaxIter)", fontsize=12, fontweight='bold')
-        self.fig_exp.tight_layout()
-        self.canvas_exp.draw()
-        self.viz_nb.select(2)
+        def on_done(result):
+            ks, fs, ts = result
+            if not ks:
+                return
+            max_iters = [k * m * n for k in ks]
+            labels = [f"K={k}\n({mi})" for k, mi in zip(ks, max_iters)]
+            self.fig_exp.clear()
+            ax1 = self.fig_exp.add_subplot(121)
+            ax2 = self.fig_exp.add_subplot(122)
+            ax1.plot(ks, fs, 'r-s', linewidth=2, markersize=8)
+            ax1.set_xticks(ks)
+            ax1.set_xticklabels(labels, fontsize=7)
+            ax1.set_xlabel("K  (MaxIter = K·m·n)")
+            ax1.set_ylabel("F (середнє)")
+            ax1.set_title("Якість від K")
+            ax1.grid(True, alpha=0.3)
+            ax2.plot(ks, ts, 'g-^', linewidth=2, markersize=8)
+            ax2.set_xticks(ks)
+            ax2.set_xticklabels(labels, fontsize=7)
+            ax2.set_xlabel("K  (MaxIter = K·m·n)")
+            ax2.set_ylabel("час, с")
+            ax2.set_title("Час від K")
+            ax2.grid(True, alpha=0.3)
+            self.fig_exp.suptitle(
+                f"Вплив коефіцієнту K (MaxIter=K·{m}·{n})", fontsize=12, fontweight='bold')
+            self.fig_exp.tight_layout()
+            self.canvas_exp.draw()
+            self.viz_nb.select(2)
+
+        self._run_async(worker, on_done)
 
     def experiment_tabu_size(self):
         ctx = self._exp_context()
@@ -583,29 +626,34 @@ class SensorPlacementApp:
         tsize_step = max(1, int(self.exp_ranges['tsize_step'].get()))
         runs       = self._itasks('tsize_tasks')
 
-        sizes, fs, ts = exp_module.run_tabu_size_experiment(
-            m, n, alpha, beta, L, h, lambda_lim, runs, d,
-            max_iter, tsize_from, tsize_to, tsize_step, self.log_msg)
-        if not sizes:
-            return
+        def worker():
+            return exp_module.run_tabu_size_experiment(
+                m, n, alpha, beta, L, h, lambda_lim, runs, d,
+                max_iter, tsize_from, tsize_to, tsize_step, self.log_msg)
 
-        self.fig_exp.clear()
-        ax1 = self.fig_exp.add_subplot(121)
-        ax2 = self.fig_exp.add_subplot(122)
-        ax1.plot(sizes, fs, 'r-s', linewidth=2, markersize=8)
-        ax1.set_xlabel("Розмір списку табу")
-        ax1.set_ylabel("F (середнє)")
-        ax1.set_title("Якість від Tsize")
-        ax1.grid(True, alpha=0.3)
-        ax2.plot(sizes, ts, 'g-^', linewidth=2, markersize=8)
-        ax2.set_xlabel("Розмір списку табу")
-        ax2.set_ylabel("час, с")
-        ax2.set_title("Час від Tsize")
-        ax2.grid(True, alpha=0.3)
-        self.fig_exp.suptitle("Вплив розміру списку табу", fontsize=12, fontweight='bold')
-        self.fig_exp.tight_layout()
-        self.canvas_exp.draw()
-        self.viz_nb.select(2)
+        def on_done(result):
+            sizes, fs, ts = result
+            if not sizes:
+                return
+            self.fig_exp.clear()
+            ax1 = self.fig_exp.add_subplot(121)
+            ax2 = self.fig_exp.add_subplot(122)
+            ax1.plot(sizes, fs, 'r-s', linewidth=2, markersize=8)
+            ax1.set_xlabel("Розмір списку табу")
+            ax1.set_ylabel("F (середнє)")
+            ax1.set_title("Якість від Tsize")
+            ax1.grid(True, alpha=0.3)
+            ax2.plot(sizes, ts, 'g-^', linewidth=2, markersize=8)
+            ax2.set_xlabel("Розмір списку табу")
+            ax2.set_ylabel("час, с")
+            ax2.set_title("Час від Tsize")
+            ax2.grid(True, alpha=0.3)
+            self.fig_exp.suptitle("Вплив розміру списку табу", fontsize=12, fontweight='bold')
+            self.fig_exp.tight_layout()
+            self.canvas_exp.draw()
+            self.viz_nb.select(2)
+
+        self._run_async(worker, on_done)
 
     def experiment_comparison(self):
         ctx = self._exp_context()
@@ -614,41 +662,43 @@ class SensorPlacementApp:
         m, n, alpha, beta, L, h, lambda_lim, max_iter, tabu_size, d = ctx
         runs = self._itasks('cmp_tasks')
 
-        gf, tf, gt, tt = exp_module.run_comparison_experiment(
-            m, n, alpha, beta, L, h, lambda_lim,
-            max_iter, tabu_size, runs, d, self.log_msg)
+        def worker():
+            return exp_module.run_comparison_experiment(
+                m, n, alpha, beta, L, h, lambda_lim,
+                max_iter, tabu_size, runs, d, self.log_msg)
 
-        task_ids = list(range(1, runs + 1))
-        self.fig_exp.clear()
-        ax1 = self.fig_exp.add_subplot(121)
-        ax2 = self.fig_exp.add_subplot(122)
+        def on_done(result):
+            gf, tf, gt, tt = result
+            task_ids = list(range(1, runs + 1))
+            self.fig_exp.clear()
+            ax1 = self.fig_exp.add_subplot(121)
+            ax2 = self.fig_exp.add_subplot(122)
+            ax1.plot(task_ids, gf, 'b-o', label='Жадібний',   linewidth=1.5, markersize=7)
+            ax1.plot(task_ids, tf, 'r-s', label='Табу-пошук', linewidth=1.5, markersize=7)
+            ax1.set_xlabel("Номер ІЗ")
+            ax1.set_ylabel("F")
+            ax1.set_title("Цільова функція F по ІЗ")
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            labels = ['Жадібний', 'Табу-пошук']
+            colors = ['#2196F3', '#FF5722']
+            bars = ax2.bar(labels, [np.mean(gt), np.mean(tt)], color=colors,
+                           width=0.5, edgecolor='black')
+            ax2.set_title("Середній час виконання")
+            ax2.set_ylabel("час, с")
+            for bar, val in zip(bars, [np.mean(gt), np.mean(tt)]):
+                ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                         f"{val:.4f}", ha='center', va='bottom', fontsize=10)
+            improve = ((np.mean(tf) - np.mean(gf)) / np.mean(gf) * 100
+                       if np.mean(gf) > 0 else 0.0)
+            self.fig_exp.suptitle(
+                f"Порівняння алгоритмів | покращення табу: {improve:+.1f}%",
+                fontsize=11, fontweight='bold')
+            self.fig_exp.tight_layout()
+            self.canvas_exp.draw()
+            self.viz_nb.select(2)
 
-        ax1.plot(task_ids, gf, 'b-o', label='Жадібний',   linewidth=1.5, markersize=7)
-        ax1.plot(task_ids, tf, 'r-s', label='Табу-пошук', linewidth=1.5, markersize=7)
-        ax1.set_xlabel("Номер ІЗ")
-        ax1.set_ylabel("F")
-        ax1.set_title("Цільова функція F по ІЗ")
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-
-        labels = ['Жадібний', 'Табу-пошук']
-        colors = ['#2196F3', '#FF5722']
-        bars = ax2.bar(labels, [np.mean(gt), np.mean(tt)], color=colors,
-                       width=0.5, edgecolor='black')
-        ax2.set_title("Середній час виконання")
-        ax2.set_ylabel("час, с")
-        for bar, val in zip(bars, [np.mean(gt), np.mean(tt)]):
-            ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                     f"{val:.4f}", ha='center', va='bottom', fontsize=10)
-
-        improve = ((np.mean(tf) - np.mean(gf)) / np.mean(gf) * 100
-                   if np.mean(gf) > 0 else 0.0)
-        self.fig_exp.suptitle(
-            f"Порівняння алгоритмів | покращення табу: {improve:+.1f}%",
-            fontsize=11, fontweight='bold')
-        self.fig_exp.tight_layout()
-        self.canvas_exp.draw()
-        self.viz_nb.select(2)
+        self._run_async(worker, on_done)
 
     # ----------------------------------------------------------------
     # Внутрішні методи відображення

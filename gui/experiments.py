@@ -10,7 +10,7 @@ from algorithms import greedy_algorithm, tabu_search
 
 
 def run_size_experiment(alpha, beta, h, lambda_lim, tasks_per_size, d,
-                        max_iter, tabu_size,
+                        _max_iter_unused, tabu_size,
                         dim_from, dim_to, dim_step, log_fn):
     """Дослідження впливу розмірності задачі (квадратні сітки dim×dim)."""
     dims = list(range(dim_from, dim_to + 1, dim_step))
@@ -35,7 +35,7 @@ def run_size_experiment(alpha, beta, h, lambda_lim, tasks_per_size, d,
             t0 = time.time()
             _, _, F_t, _, _ = tabu_search(
                 U_i, S_i, m_i, n_i, alpha, beta, L_i, h, lambda_lim,
-                max_iter=max_iter, tabu_size=tabu_size)
+                max_iter=m_i * n_i, tabu_size=tabu_size)
             tt.append(time.time() - t0)
             tf.append(F_t)
         greedy_fs.append(np.mean(gf))
@@ -109,17 +109,18 @@ def run_tabu_size_experiment(m, n, alpha, beta, L, h, lambda_lim,
 
 def run_max_iter_experiment(m, n, alpha, beta, L, h, lambda_lim,
                              tabu_size, runs, d,
-                             iter_from, iter_to, iter_step, log_fn):
-    """Дослідження впливу MaxIter (умова завершення табу-пошуку)."""
-    iters = list(range(iter_from, iter_to + 1, iter_step))
-    if not iters:
-        log_fn("  Порожній діапазон MaxIter")
+                             k_from, k_to, k_step, log_fn):
+    """Дослідження впливу коефіцієнту K (MaxIter = K * m * n)."""
+    ks = list(range(k_from, k_to + 1, k_step))
+    if not ks:
+        log_fn("  Порожній діапазон K")
         return [], [], []
 
     fs, ts = [], []
 
-    log_fn("\nЕксперимент: вплив умови завершення (MaxIter)")
-    for max_it in iters:
+    log_fn("\nЕксперимент: вплив коефіцієнту K (MaxIter = K·m·n)")
+    for k in ks:
+        max_it = max(1, k * m * n)
         f_list, t_list = [], []
         for seed in range(runs):
             U_i, S_i, _, _, _ = generate_problem(m, n, alpha, beta, d=d, seed=seed)
@@ -131,9 +132,9 @@ def run_max_iter_experiment(m, n, alpha, beta, L, h, lambda_lim,
             f_list.append(F_t)
         fs.append(np.mean(f_list))
         ts.append(np.mean(t_list))
-        log_fn(f"  MaxIter={max_it}: F={fs[-1]:.1f}, час={ts[-1]:.3f}с")
+        log_fn(f"  K={k} (MaxIter={max_it}): F={fs[-1]:.1f}, час={ts[-1]:.3f}с")
 
-    return iters, fs, ts
+    return ks, fs, ts
 
 
 def run_comparison_experiment(m, n, alpha, beta, L, h, lambda_lim,

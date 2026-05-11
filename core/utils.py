@@ -55,7 +55,7 @@ def compute_delta_f(i, j, sensor_type, U, K, lambda_lim, m, n):
     return delta, cells
 
 
-def generate_problem(m, n, alpha, beta, d=0.75, lambda_max=2, h_max=2, seed=None):
+def generate_problem(m, n, alpha, beta, d=0.75, lambda_max=2, h_max=2, seed=None, u_max=50):
     """
     Генерує випадковий екземпляр задачі.
 
@@ -70,7 +70,7 @@ def generate_problem(m, n, alpha, beta, d=0.75, lambda_max=2, h_max=2, seed=None
         random.seed(seed)
         np.random.seed(seed)
 
-    U = np.random.randint(1, 51, size=(m, n)).astype(float)
+    U = np.random.randint(1, u_max + 1, size=(m, n)).astype(float)
     S = (np.random.random((m, n)) < d).astype(int)
     if np.sum(S) == 0:
         S[m // 2][n // 2] = 1
