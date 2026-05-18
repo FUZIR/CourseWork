@@ -107,34 +107,47 @@ def run_tabu_size_experiment(m, n, alpha, beta, L, h, lambda_lim,
     return sizes, fs, ts
 
 
-def run_max_iter_experiment(m, n, alpha, beta, L, h, lambda_lim,
+def run_max_iter_experiment(alpha, beta, h, lambda_lim,
                              tabu_size, runs, d,
-                             k_from, k_to, k_step, log_fn):
-    """Дослідження впливу коефіцієнту K (MaxIter = K * m * n)."""
+                             k_from, k_to, k_step,
+                             dim_from, dim_to, dim_step, log_fn):
+    """Дослідження впливу K та розмірності (MaxIter = K·dim², m=n=dim)."""
     ks = list(range(k_from, k_to + 1, k_step))
+    dims = list(range(dim_from, dim_to + 1, dim_step))
+
     if not ks:
         log_fn("  Порожній діапазон K")
-        return [], [], []
+        return [], [], {}, {}
+    if not dims:
+        log_fn("  Порожній діапазон розмірностей")
+        return [], [], {}, {}
 
-    fs, ts = [], []
+    all_fs = {}
+    all_ts = {}
 
-    log_fn("\nЕксперимент: вплив коефіцієнту K (MaxIter = K·m·n)")
-    for k in ks:
-        max_it = max(1, k * m * n)
-        f_list, t_list = [], []
-        for seed in range(runs):
-            U_i, S_i, _, _, _ = generate_problem(m, n, alpha, beta, d=d, seed=seed)
-            t0 = time.time()
-            _, _, F_t, _, _ = tabu_search(
-                U_i, S_i, m, n, alpha, beta, L, h, lambda_lim,
-                max_iter=max_it, tabu_size=tabu_size)
-            t_list.append(time.time() - t0)
-            f_list.append(F_t)
-        fs.append(np.mean(f_list))
-        ts.append(np.mean(t_list))
-        log_fn(f"  K={k} (MaxIter={max_it}): F={fs[-1]:.1f}, час={ts[-1]:.3f}с")
+    log_fn("\nЕксперимент: вплив K та розмірності (MaxIter = K·dim²)")
+    for dim in dims:
+        m_i, n_i = dim, dim
+        L_i = alpha * max(3, int(d * m_i * n_i * 0.3))
+        fs, ts = [], []
+        for k in ks:
+            max_it = max(1, k * m_i * n_i)
+            f_list, t_list = [], []
+            for seed in range(runs):
+                U_i, S_i, _, _, _ = generate_problem(m_i, n_i, alpha, beta, d=d, seed=seed)
+                t0 = time.time()
+                _, _, F_t, _, _ = tabu_search(
+                    U_i, S_i, m_i, n_i, alpha, beta, L_i, h, lambda_lim,
+                    max_iter=max_it, tabu_size=tabu_size)
+                t_list.append(time.time() - t0)
+                f_list.append(F_t)
+            fs.append(np.mean(f_list))
+            ts.append(np.mean(t_list))
+            log_fn(f"  {m_i}×{n_i}, K={k} (MaxIter={max_it}): F={fs[-1]:.1f}, час={ts[-1]:.3f}с")
+        all_fs[dim] = fs
+        all_ts[dim] = ts
 
-    return ks, fs, ts
+    return dims, ks, all_fs, all_ts
 
 
 def run_comparison_experiment(m, n, alpha, beta, L, h, lambda_lim,

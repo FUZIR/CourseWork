@@ -175,10 +175,13 @@ class SensorPlacementApp:
 
         # ---- Group: Коефіцієнт K (MaxIter = K·m·n) ----
         self._exp_group(inner, "Коефіцієнт K  (MaxIter = K·m·n)", [
-            ("K від:",    'iter_from',  '1'),
-            ("K до:",     'iter_to',    '10'),
-            ("Крок:",     'iter_step',  '1'),
-            ("К-сть ІЗ:", 'iter_tasks', '5'),
+            ("K від:",      'iter_from',     '1'),
+            ("K до:",       'iter_to',       '10'),
+            ("Крок K:",     'iter_step',     '1'),
+            ("dim від:",    'iter_dim_from', '4'),
+            ("dim до:",     'iter_dim_to',   '10'),
+            ("Крок dim:",   'iter_dim_step', '2'),
+            ("К-сть ІЗ:",   'iter_tasks',    '3'),
         ], self.experiment_max_iter)
 
         # ---- Group: Розмір списку табу ----
@@ -574,42 +577,51 @@ class SensorPlacementApp:
         ctx = self._exp_context()
         if ctx is None:
             return
-        m, n, alpha, beta, L, h, lambda_lim, _, tabu_size, d = ctx
-        k_from = int(self.exp_ranges['iter_from'].get())
-        k_to   = int(self.exp_ranges['iter_to'].get())
-        k_step = max(1, int(self.exp_ranges['iter_step'].get()))
-        runs   = self._itasks('iter_tasks')
+        _, _, alpha, beta, _, h, lambda_lim, _, tabu_size, d = ctx
+        k_from   = int(self.exp_ranges['iter_from'].get())
+        k_to     = int(self.exp_ranges['iter_to'].get())
+        k_step   = max(1, int(self.exp_ranges['iter_step'].get()))
+        dim_from = int(self.exp_ranges['iter_dim_from'].get())
+        dim_to   = int(self.exp_ranges['iter_dim_to'].get())
+        dim_step = max(1, int(self.exp_ranges['iter_dim_step'].get()))
+        runs     = self._itasks('iter_tasks')
 
         def worker():
             return exp_module.run_max_iter_experiment(
-                m, n, alpha, beta, L, h, lambda_lim,
-                tabu_size, runs, d, k_from, k_to, k_step, self.log_msg)
+                alpha, beta, h, lambda_lim,
+                tabu_size, runs, d,
+                k_from, k_to, k_step,
+                dim_from, dim_to, dim_step, self.log_msg)
 
         def on_done(result):
-            ks, fs, ts = result
-            if not ks:
+            dims, ks, all_fs, all_ts = result
+            if not ks or not dims:
                 return
-            max_iters = [k * m * n for k in ks]
-            labels = [f"K={k}\n({mi})" for k, mi in zip(ks, max_iters)]
+            colors = plt.cm.tab10(np.linspace(0, 1, len(dims)))
             self.fig_exp.clear()
             ax1 = self.fig_exp.add_subplot(121)
             ax2 = self.fig_exp.add_subplot(122)
-            ax1.plot(ks, fs, 'r-s', linewidth=2, markersize=8)
-            ax1.set_xticks(ks)
-            ax1.set_xticklabels(labels, fontsize=7)
-            ax1.set_xlabel("K  (MaxIter = K·m·n)")
+            for i, dim in enumerate(dims):
+                lbl = f"{dim}×{dim}"
+                ax1.plot(ks, all_fs[dim], '-s', color=colors[i], label=lbl,
+                         linewidth=2, markersize=7)
+                ax2.plot(ks, all_ts[dim], '-^', color=colors[i], label=lbl,
+                         linewidth=2, markersize=7)
+            ax1.set_xlabel("K  (MaxIter = K·dim²)")
             ax1.set_ylabel("F (середнє)")
-            ax1.set_title("Якість від K")
+            ax1.set_title("Якість від K та розмірності")
+            ax1.set_xticks(ks)
+            ax1.legend(title="dim")
             ax1.grid(True, alpha=0.3)
-            ax2.plot(ks, ts, 'g-^', linewidth=2, markersize=8)
-            ax2.set_xticks(ks)
-            ax2.set_xticklabels(labels, fontsize=7)
-            ax2.set_xlabel("K  (MaxIter = K·m·n)")
+            ax2.set_xlabel("K  (MaxIter = K·dim²)")
             ax2.set_ylabel("час, с")
-            ax2.set_title("Час від K")
+            ax2.set_title("Час від K та розмірності")
+            ax2.set_xticks(ks)
+            ax2.legend(title="dim")
             ax2.grid(True, alpha=0.3)
             self.fig_exp.suptitle(
-                f"Вплив коефіцієнту K (MaxIter=K·{m}·{n})", fontsize=12, fontweight='bold')
+                "Вплив K та розмірності (MaxIter = K·dim²)",
+                fontsize=12, fontweight='bold')
             self.fig_exp.tight_layout()
             self.canvas_exp.draw()
             self.viz_nb.select(2)
